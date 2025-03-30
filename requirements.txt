@@ -1,0 +1,7 @@
+tensorflow>=2.4.0
+deepface
+faiss-cpu
+opencv-python
+matplotlib
+numpy
+Pillow
