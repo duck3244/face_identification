@@ -1,7 +1,11 @@
-tensorflow>=2.4.0
-deepface
-faiss-cpu
-opencv-python
+deepface>=0.0.93,<=0.0.99
+tensorflow>=2.4.0,<2.16.0
+faiss-cpu>=1.7.0,<1.8.0
+opencv-python>=4.5.5.64
 matplotlib
-numpy
-Pillow
+numpy>=1.22.0,<2.0.0
+Pillow>=9.0.0
+gradio>=4.0.0
+faker
+pytest
+pytest-mock

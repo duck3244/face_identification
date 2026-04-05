@@ -1,0 +1,13 @@
+{
+  "identities": [
+    "Steven_Torres",
+    "Steven_Torres",
+    "Taylor_Larson",
+    "Taylor_Larson",
+    "Vicki_Stevens",
+    "Vicki_Stevens",
+    "Vicki_Stevens"
+  ],
+  "model_name": "VGG-Face",
+  "distance_metric": "cosine"
+}

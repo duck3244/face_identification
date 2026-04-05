@@ -1,12 +1,20 @@
+from __future__ import annotations
+
+import json
+import os
+
 import faiss
-import pickle
 import numpy as np
 
 from face_representation import represent_face
+from validators import validate_threshold, validate_top_k
+from config import get_logger
+
+logger = get_logger(__name__)
 
 
 class FaceDatabase:
-    def __init__(self, model_name, distance_metric):
+    def __init__(self, model_name: str, distance_metric: str) -> None:
         """
         얼굴 데이터베이스 초기화
 
@@ -19,12 +27,13 @@ class FaceDatabase:
         """
         self.model_name = model_name
         self.distance_metric = distance_metric
-        self.embeddings = []
-        self.identities = []
-        self.index = None
+        self.embeddings: list[list[float]] = []
+        self.identities: list[str] = []
+        self.index: faiss.Index | None = None
+        self._index_dirty: bool = False
 
 
-    def add_face(self, img_path, identity):
+    def add_face(self, img_path: str, identity: str) -> bool:
         """
         얼굴을 데이터베이스에 추가
 
@@ -45,44 +54,49 @@ class FaceDatabase:
         if embedding is not None:
             self.embeddings.append(embedding)
             self.identities.append(identity)
-            # 데이터베이스가 업데이트되었으므로 인덱스 재구축
-            self._build_index()
+            self._index_dirty = True
             return True
         else:
             return False
 
 
-    def _build_index(self):
+    def build_index(self) -> None:
+        """공개 인덱스 빌드 메서드"""
+        self._build_index()
+        self._index_dirty = False
+
+
+    def _build_index(self) -> None:
         """FAISS 인덱스 구축"""
         if len(self.embeddings) == 0:
-            print("데이터베이스가 비어 있습니다.")
+            logger.warning("데이터베이스가 비어 있습니다.")
             return
 
-        # 임베딩을 numpy 배열로 변환
         embeddings_array = np.array(self.embeddings).astype('float32')
         dimension = embeddings_array.shape[1]
 
-        # FAISS 인덱스 생성
         if self.distance_metric == "cosine":
-            # 코사인 유사도를 위한 L2 정규화 및 내적 인덱스
             faiss.normalize_L2(embeddings_array)
-            self.index = faiss.IndexFlatIP(dimension)  # 내적 제품 (코사인 유사도)
+            self.index = faiss.IndexFlatIP(dimension)
         else:
-            # 유클리드 거리를 위한 L2 인덱스
             self.index = faiss.IndexFlatL2(dimension)
 
-        # 인덱스에 벡터 추가
         self.index.add(embeddings_array)
-        print(f"FAISS 인덱스가 {len(self.embeddings)}개의 얼굴로 구축되었습니다.")
+        logger.info(f"FAISS 인덱스가 {len(self.embeddings)}개의 얼굴로 구축되었습니다.")
 
 
-    def search(self, query_embedding, threshold, top_k):
+    def search(
+        self,
+        query_embedding: list[float] | np.ndarray,
+        threshold: float,
+        top_k: int
+    ) -> list[tuple[str, float]]:
         """
         데이터베이스에서 유사한 얼굴 검색
 
         Parameters:
         -----------
-        query_embedding: numpy.ndarray
+        query_embedding: list[float] | np.ndarray
             검색할 쿼리 임베딩
         threshold: float
             얼굴 일치로 간주할 임계값
@@ -91,36 +105,35 @@ class FaceDatabase:
 
         Returns:
         --------
-        list
+        list[tuple[str, float]]
             [(identity, similarity_score), ...] 형식의 일치 목록
         """
+        validate_threshold(threshold)
+        validate_top_k(top_k)
+
+        if self._index_dirty:
+            self.build_index()
+
         if self.index is None or len(self.embeddings) == 0:
-            print("데이터베이스가 비어 있습니다.")
+            logger.warning("데이터베이스가 비어 있습니다.")
             return []
 
-        # 쿼리 임베딩을 numpy 배열로 변환
-        query_embedding = np.array([query_embedding]).astype('float32')
+        query_array = np.array([query_embedding]).astype('float32')
 
-        # 코사인 유사도의 경우 L2 정규화
         if self.distance_metric == "cosine":
-            faiss.normalize_L2(query_embedding)
+            faiss.normalize_L2(query_array)
 
-        # FAISS를 사용하여 가장 가까운 이웃 검색
-        distances, indices = self.index.search(query_embedding, top_k)
+        distances, indices = self.index.search(query_array, top_k)
 
-        # 결과 형식화
-        results = []
+        results: list[tuple[str, float]] = []
         for i in range(len(indices[0])):
             idx = indices[0][i]
             score = distances[0][i]
 
             if self.distance_metric == "cosine":
-                # 코사인 유사도의 경우 점수가 높을수록 더 유사함
                 if score >= threshold:
                     results.append((self.identities[idx], float(score)))
             else:
-                # 유클리드 거리의 경우 점수가 낮을수록 더 유사함
-                # 유클리드 거리를 [0, 1] 범위의 유사도 점수로 변환
                 similarity = 1 / (1 + score)
                 if similarity >= threshold:
                     results.append((self.identities[idx], float(similarity)))
@@ -128,35 +141,84 @@ class FaceDatabase:
         return results
 
 
-    def save(self, file_path):
-        """데이터베이스를 파일에 저장"""
-        data = {
-            'embeddings': self.embeddings,
+    def save(self, file_path: str) -> None:
+        """데이터베이스를 파일에 저장 (npz + json 형식)"""
+        base_path = os.path.splitext(file_path)[0]
+        npz_path = base_path + '.npz'
+        json_path = base_path + '.json'
+
+        embeddings_array = np.array(self.embeddings).astype('float32')
+        np.savez_compressed(npz_path, embeddings=embeddings_array)
+
+        metadata = {
             'identities': self.identities,
             'model_name': self.model_name,
             'distance_metric': self.distance_metric
         }
-        with open(file_path, 'wb') as f:
-            pickle.dump(data, f)
-        print(f"데이터베이스가 {file_path}에 저장되었습니다.")
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"데이터베이스가 {base_path}에 저장되었습니다.")
 
 
-    def load(self, file_path):
-        """파일에서 데이터베이스 로드"""
+    def load(self, file_path: str) -> bool:
+        """파일에서 데이터베이스 로드 (npz + json 또는 레거시 pkl 지원)"""
+        base_path = os.path.splitext(file_path)[0]
+        npz_path = base_path + '.npz'
+        json_path = base_path + '.json'
+
         try:
-            with open(file_path, 'rb') as f:
-                data = pickle.load(f)
-
-            self.embeddings = data['embeddings']
-            self.identities = data['identities']
-            self.model_name = data['model_name']
-            self.distance_metric = data['distance_metric']
-
-            # 로드 후 인덱스 재구축
-            self._build_index()
-            print(f"데이터베이스가 {file_path}에서 로드되었습니다.")
-            return True
-        except Exception as e:
-            print(f"데이터베이스 로드 중 오류 발생: {e}")
+            if os.path.exists(npz_path) and os.path.exists(json_path):
+                return self._load_npz_json(npz_path, json_path)
+            elif os.path.exists(file_path) and file_path.endswith('.pkl'):
+                logger.info("레거시 pkl 형식을 감지했습니다. 새 형식으로 마이그레이션합니다...")
+                return self._load_and_migrate_pkl(file_path)
+            else:
+                logger.error(f"데이터베이스 파일을 찾을 수 없습니다: {file_path}")
+                return False
+        except (FileNotFoundError, KeyError, json.JSONDecodeError, ValueError) as e:
+            logger.error(f"데이터베이스 로드 중 오류 발생: {e}")
             return False
 
+
+    def _load_npz_json(self, npz_path: str, json_path: str) -> bool:
+        """npz + json 형식에서 로드"""
+        data = np.load(npz_path)
+        with open(json_path, 'r', encoding='utf-8') as f:
+            metadata = json.load(f)
+
+        if metadata['model_name'] != self.model_name:
+            raise ValueError(
+                f"모델 불일치: 데이터베이스는 '{metadata['model_name']}'을 사용하지만, "
+                f"현재 시스템은 '{self.model_name}'을 사용합니다."
+            )
+
+        self.embeddings = data['embeddings'].tolist()
+        self.identities = metadata['identities']
+        self.model_name = metadata['model_name']
+        self.distance_metric = metadata['distance_metric']
+
+        self._build_index()
+        self._index_dirty = False
+        logger.info("데이터베이스가 로드되었습니다.")
+        return True
+
+
+    def _load_and_migrate_pkl(self, pkl_path: str) -> bool:
+        """레거시 pkl 파일을 로드하고 새 형식으로 마이그레이션"""
+        import pickle
+        with open(pkl_path, 'rb') as f:
+            data = pickle.load(f)
+
+        self.embeddings = data['embeddings']
+        self.identities = data['identities']
+        self.model_name = data['model_name']
+        self.distance_metric = data['distance_metric']
+
+        self._build_index()
+        self._index_dirty = False
+
+        # 새 형식으로 저장
+        self.save(pkl_path)
+        logger.info("레거시 pkl 파일이 새 형식으로 마이그레이션되었습니다.")
+        return True

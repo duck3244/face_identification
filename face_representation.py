@@ -1,8 +1,17 @@
+from __future__ import annotations
+
 from deepface import DeepFace
-from config import DEFAULT_MODEL_NAME, DEFAULT_DETECTOR_BACKEND
+from config import DEFAULT_MODEL_NAME, DEFAULT_DETECTOR_BACKEND, get_logger
+from validators import validate_image_path
+
+logger = get_logger(__name__)
 
 
-def represent_face(img_path, model_name=DEFAULT_MODEL_NAME, detector_backend=DEFAULT_DETECTOR_BACKEND):
+def represent_face(
+    img_path: str,
+    model_name: str = DEFAULT_MODEL_NAME,
+    detector_backend: str = DEFAULT_DETECTOR_BACKEND
+) -> list[float] | None:
     """
     이미지에서 얼굴 표현(임베딩) 추출
 
@@ -17,24 +26,23 @@ def represent_face(img_path, model_name=DEFAULT_MODEL_NAME, detector_backend=DEF
 
     Returns:
     --------
-    numpy.ndarray
-        얼굴 임베딩 벡터
+    list[float] | None
+        얼굴 임베딩 벡터 또는 None
     """
+    validate_image_path(img_path)
     try:
-        # CPU 모드 명시적으로 지정
         embedding_objs = DeepFace.represent(
             img_path=img_path,
             model_name=model_name,
-            enforce_detection=False,  # 얼굴 감지 강제 비활성화
-            detector_backend=detector_backend  # 더 가벼운 OpenCV 백엔드 사용
+            enforce_detection=False,
+            detector_backend=detector_backend
         )
 
         if embedding_objs:
-            return embedding_objs[0]["embedding"]  # 첫 번째 얼굴의 임베딩 반환
+            return embedding_objs[0]["embedding"]
         else:
-            print("얼굴 임베딩을 추출할 수 없습니다.")
+            logger.warning("얼굴 임베딩을 추출할 수 없습니다.")
             return None
-    except Exception as e:
-        print(f"얼굴 표현 추출 중 오류 발생: {e}")
+    except (ValueError, FileNotFoundError) as e:
+        logger.error(f"얼굴 표현 추출 중 오류 발생: {e}")
         return None
-
